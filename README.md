@@ -97,6 +97,8 @@ simply be retried with the given information.
 
 #### auth
 
+TODO describe new signatures, don't ever use the word "token"
+
 When a client connects it may authenticate using an authentication token which
 signs a presence string. The authentication token is a SHA256-HMAC of the
 precense string and a secret key which the backend app and otter share. The
