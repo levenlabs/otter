@@ -11,7 +11,7 @@ import (
 )
 
 func init() {
-	Init("127.0.0.1:6379", 1)
+	Init("127.0.0.1:6379", 1, 3)
 }
 
 func TestGetSetConn(t *T) {

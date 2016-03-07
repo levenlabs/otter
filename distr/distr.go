@@ -44,7 +44,7 @@ func withConn(key string, fn func(*redis.Client)) error {
 // Init initializes the shared util.Cmder instance connected to the given
 // address (single instance or cluster), as well as sets up any necessary
 // go-routines
-func Init(addr string, poolSize int) {
+func Init(addr string, poolSize, subConnCount int) {
 	kv := llog.KV{
 		"addr":     addr,
 		"poolSize": poolSize,
@@ -57,6 +57,8 @@ func Init(addr string, poolSize int) {
 		kv["err"] = err
 		llog.Fatal("error connecting to redis", kv)
 	}
+
+	initSubs(addr, subConnCount)
 }
 
 func connKey(cID string) string {
