@@ -30,12 +30,23 @@ func randSubKey() string {
 	return subKey(rand.Intn(numSubKeys))
 }
 
+// PubType describes the type of information a publish is conveying
+type PubType string
+
+// Available PubType values
+const (
+	PubTypePub   = PubType("pub")
+	PubTypeSub   = PubType("sub")
+	PubTypeUnsub = PubType("unsub")
+)
+
 // Pub describes a publish message either being sent out to other nodes or being
 // received by this one
 type Pub struct {
-	Conn    conn.Conn
-	Channel string
-	Message *json.RawMessage
+	Type    PubType          `json:"type"`
+	Conn    conn.Conn        `json:"connection"`
+	Channel string           `json:"channel"`
+	Message *json.RawMessage `json:"message,omitempty"`
 }
 
 // PubCh is where publishes which are being received by this node are written

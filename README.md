@@ -162,7 +162,7 @@ Publishes will be pushed to a connection and will look like this:
 
 ```json
 {
-    "type":"publish",
+    "type":"pub",
     "channel":"channel name",
     "message":"message",
     "connection":{

@@ -158,25 +158,42 @@ func testPubCmd(ch, msg string) CommandPub {
 
 func TestPubSubUnsub(t *T) {
 	c1, id1 := testConn()
-	c2, _ := testConn()
+	c2, id2 := testConn()
 	cb, idb := testBackendConn()
 	ch := testutil.RandStr()
 
 	requireWrite(t, cb, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
-	requireWrite(t, c1, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
-	requireWrite(t, c2, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
-	// TODO make sure cb gets sub pushes for c1 and c2
 	time.Sleep(100 * time.Millisecond)
 
-	assertPubEqual := func(from conn.ID, fromBackend bool, msg string, p distr.Pub) {
-		b, _ := json.Marshal(msg)
-		msgj := json.RawMessage(b)
+	requireWrite(t, c1, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
+	requireWrite(t, c2, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
+	time.Sleep(100 * time.Millisecond)
+
+	assertPubEqual := func(typ distr.PubType, from conn.ID, fromBackend bool, msg string, p distr.Pub) {
 		exp := distr.Pub{
+			Type:    typ,
 			Conn:    conn.Conn{ID: from, IsBackend: fromBackend},
 			Channel: ch,
-			Message: &msgj,
+		}
+		if msg != "" {
+			b, _ := json.Marshal(msg)
+			msgj := json.RawMessage(b)
+			exp.Message = &msgj
 		}
 		assert.Equal(t, exp, p)
+	}
+
+	//////////////////////////
+	// Make sure backend receives sub messages from both clients
+
+	var pb distr.Pub
+
+	for i := 0; i < 2; i++ {
+		pb = distr.Pub{}
+		requireRcv(t, cb, &pb)
+		assert.True(t, pb.Conn.ID == id1 || pb.Conn.ID == id2)
+		pb.Conn.ID = ""
+		assertPubEqual(distr.PubTypeSub, "", false, "", pb)
 	}
 
 	//////////////////////////
@@ -185,9 +202,9 @@ func TestPubSubUnsub(t *T) {
 	msg := testutil.RandStr()
 	requireWrite(t, c1, testPubCmd(ch, msg))
 
-	var pb distr.Pub
+	pb = distr.Pub{}
 	requireRcv(t, cb, &pb)
-	assertPubEqual(id1, false, msg, pb)
+	assertPubEqual(distr.PubTypePub, id1, false, msg, pb)
 
 	//////////////////////////
 	// Publish from backend, both clients should get it
@@ -197,18 +214,20 @@ func TestPubSubUnsub(t *T) {
 
 	var p1 distr.Pub
 	requireRcv(t, c1, &p1)
-	assertPubEqual(idb, true, msg, p1)
+	assertPubEqual(distr.PubTypePub, idb, true, msg, p1)
 
 	var p2 distr.Pub
 	requireRcv(t, c2, &p2)
-	assertPubEqual(idb, true, msg, p2)
+	assertPubEqual(distr.PubTypePub, idb, true, msg, p2)
 
 	//////////////////////////
 	// Unsub c1, then publish from backend, only c2 should get it
 
 	requireWrite(t, c1, CommandUnsub{Command: Command{Command: "unsub"}, Channel: ch})
 
-	// TODO make sure cb gets an unsub push for c1
+	pb = distr.Pub{}
+	requireRcv(t, cb, &pb)
+	assertPubEqual(distr.PubTypeUnsub, id1, false, "", pb)
 
 	msg = testutil.RandStr()
 	requireWrite(t, cb, testPubCmd(ch, msg))
@@ -217,14 +236,16 @@ func TestPubSubUnsub(t *T) {
 
 	p2 = distr.Pub{}
 	requireRcv(t, c2, &p2)
-	assertPubEqual(idb, true, msg, p2)
+	assertPubEqual(distr.PubTypePub, idb, true, msg, p2)
 
 	//////////////////////////
 	// Close c2, then publish from backend, nothing should get it
 
 	c2.Close()
 
-	// TODO make sure cb gets an unsub push for c2
+	pb = distr.Pub{}
+	requireRcv(t, cb, &pb)
+	assertPubEqual(distr.PubTypeUnsub, id2, false, "", pb)
 
 	msg = testutil.RandStr()
 	requireWrite(t, cb, testPubCmd(ch, msg))

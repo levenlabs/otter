@@ -269,6 +269,7 @@ func (ws *wsConn) cmdPub(ci cmdInfo) {
 	ws.log(llog.Debug, "pub", llog.KV{"ch": args.Channel})
 
 	err := distr.Publish(distr.Pub{
+		Type:    distr.PubTypePub,
 		Conn:    ws.Conn,
 		Channel: args.Channel,
 		Message: args.Message,
@@ -299,6 +300,19 @@ func (ws *wsConn) cmdSub(ci cmdInfo) {
 		return
 	}
 
+	if _, ok := ws.subs[args.Channel]; !ok && !ws.Conn.IsBackend {
+		if err := distr.Publish(distr.Pub{
+			Type:    distr.PubTypeSub,
+			Conn:    ws.Conn,
+			Channel: args.Channel,
+		}); err != nil {
+			ws.log(llog.Error, "error publishing subcribe", llog.KV{
+				"ch":  args.Channel,
+				"err": err,
+			})
+		}
+	}
+
 	ws.subs[args.Channel] = struct{}{}
 }
 
@@ -313,6 +327,20 @@ func (ws *wsConn) unsub(ch string) error {
 	if err := distr.Unsubscribe(ws.Conn, ch); err != nil {
 		return err
 	}
+
+	if _, ok := ws.subs[ch]; ok && !ws.Conn.IsBackend {
+		if err := distr.Publish(distr.Pub{
+			Type:    distr.PubTypeUnsub,
+			Conn:    ws.Conn,
+			Channel: ch,
+		}); err != nil {
+			ws.log(llog.Error, "error publishing unsubcribe", llog.KV{
+				"ch":  ch,
+				"err": err,
+			})
+		}
+	}
+
 	delete(ws.subs, ch)
 	return nil
 }
