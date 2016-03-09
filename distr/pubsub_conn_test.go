@@ -18,7 +18,6 @@ func TestPublish(t *T) {
 		Conn:    conn.New(),
 		Channel: testutil.RandStr(),
 		Message: &m,
-		Backend: true,
 	}
 
 	require.Nil(t, Publish(p))

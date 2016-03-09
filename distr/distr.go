@@ -61,7 +61,7 @@ func Init(addr string, poolSize, subConnCount int) {
 	initSubs(addr, subConnCount)
 }
 
-func connKey(cID string) string {
+func connKey(cID conn.ID) string {
 	return fmt.Sprintf("conn:%s", cID)
 }
 
@@ -83,7 +83,7 @@ func UnsetConn(c conn.Conn) error {
 
 // GetConn returns the connection info for the connection with the given ID.
 // Returns empty conn.Conn if the connection wasn't found
-func GetConn(cID string) (conn.Conn, error) {
+func GetConn(cID conn.ID) (conn.Conn, error) {
 	var c conn.Conn
 	r := cmder.Cmd("GET", connKey(cID))
 	if r.Err != nil {
@@ -99,4 +99,40 @@ func GetConn(cID string) (conn.Conn, error) {
 
 	err = json.Unmarshal(b, &c)
 	return c, err
+}
+
+func channelKey(nodeID, channel string, isBackend bool) string {
+	if isBackend {
+		return fmt.Sprintf("channel:{%s}:backend:%s", nodeID, channel)
+	}
+	return fmt.Sprintf("channel:{%s}:%s", nodeID, channel)
+}
+
+// Subscribe adds the given connection to the set of connections subscribed to
+// the channel. Backend connections get their own set.
+func Subscribe(c conn.Conn, channel string) error {
+	k := channelKey(c.ID.NodeID(), channel, c.IsBackend)
+	return cmder.Cmd("SADD", k, c.ID).Err
+}
+
+// Unsubscribe removes the given connection from the set of connections
+// subscribed to the channel
+func Unsubscribe(c conn.Conn, channel string) error {
+	k := channelKey(c.ID.NodeID(), channel, c.IsBackend)
+	return cmder.Cmd("SREM", k, c.ID).Err
+}
+
+// GetSubscribed returns the set of connections on the given node which are
+// subscribed to the given channel. Does not include backend connections.
+func GetSubscribed(nodeID, channel string, backend bool) ([]conn.ID, error) {
+	l, err := cmder.Cmd("SMEMBERS", channelKey(nodeID, channel, backend)).List()
+	if err != nil {
+		return nil, err
+	}
+
+	cc := make([]conn.ID, len(l))
+	for i := range l {
+		cc[i] = conn.ID(l[i])
+	}
+	return cc, nil
 }

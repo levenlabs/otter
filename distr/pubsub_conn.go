@@ -36,7 +36,6 @@ type Pub struct {
 	Conn    conn.Conn
 	Channel string
 	Message *json.RawMessage
-	Backend bool
 }
 
 // PubCh is where publishes which are being received by this node are written

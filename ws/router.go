@@ -1,6 +1,12 @@
 package ws
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/levenlabs/go-llog"
+	"github.com/levenlabs/otter/conn"
+	"github.com/levenlabs/otter/distr"
+)
 
 // rConn contains the information about a connection which can be stored in the
 // router. The rConn value for a connection can never change for the life of the
@@ -11,14 +17,50 @@ type rConn struct {
 	// connection closed in between grabbing this struct and writing to that
 	// channel
 	closeCh chan struct{}
+
+	pubCh chan distr.Pub
 }
 
-var r = map[string]rConn{}
+var r = map[conn.ID]rConn{}
 var rlock sync.RWMutex
 
-func getRConn(id string) (rConn, bool) {
+func getRConn(id conn.ID) (rConn, bool) {
 	rlock.RLock()
 	rc, ok := r[id]
 	rlock.RUnlock()
 	return rc, ok
+}
+
+func Init(numReaders int) {
+	llog.Info("starting PubCh readers", llog.KV{"numReaders": numReaders})
+	for i := 0; i < numReaders; i++ {
+		go pubReader(i)
+	}
+}
+
+func pubReader(i int) {
+	for p := range distr.PubCh {
+		kv := llog.KV{"ch": p.Channel, "i": i}
+
+		ids, err := distr.GetSubscribed(conn.NodeID, p.Channel, !p.Conn.IsBackend)
+		if err != nil {
+			kv["err"] = err
+			llog.Error("error getting subscribed", kv)
+		}
+
+		for _, id := range ids {
+			rc, ok := getRConn(id)
+			if !ok {
+				continue
+			}
+
+			select {
+			case rc.pubCh <- p:
+			// TODO do we actually need closeCh here? doesn't really make a
+			// difference I don't think
+			case <-rc.closeCh:
+			default:
+			}
+		}
+	}
 }

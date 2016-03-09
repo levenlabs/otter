@@ -13,7 +13,7 @@ func init() {
 
 func TestNodeID(t *T) {
 	c := New()
-	nid := c.NodeID()
+	nid := c.ID.NodeID()
 	assert.NotEmpty(t, nid)
 	assert.Equal(t, NodeID, nid)
 }

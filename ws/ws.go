@@ -19,6 +19,10 @@ var connSetTimeout = 30 * time.Second
 // Needs to be set in order to properly handle authentication
 var Auth auth.Auth
 
+var (
+	errInvalidSig = errors.New("invalid signature")
+)
+
 // NewHandler returns an http.Handler which handles the websocket interface
 func NewHandler() http.Handler {
 	return websocket.Server{Handler: handler}
@@ -29,9 +33,11 @@ func handler(c *websocket.Conn) {
 		Conn: conn.New(),
 		rConn: rConn{
 			closeCh: make(chan struct{}),
+			pubCh:   make(chan distr.Pub, 10),
 		},
 		c:      c,
 		enc:    json.NewEncoder(c),
+		subs:   map[string]struct{}{},
 		readCh: make(chan json.RawMessage),
 	}
 	ws.log(llog.Debug, "conn created", nil)
@@ -45,8 +51,9 @@ func handler(c *websocket.Conn) {
 type wsConn struct {
 	conn.Conn
 	rConn
-	c   *websocket.Conn
-	enc *json.Encoder
+	c    *websocket.Conn
+	enc  *json.Encoder
+	subs map[string]struct{}
 
 	readCh chan json.RawMessage
 }
@@ -59,6 +66,9 @@ func (ws *wsConn) log(fn llog.LogFunc, msg string, kv llog.KV) {
 	}
 	if ws.Presence != "" {
 		akv["presence"] = ws.Presence
+	}
+	if ws.Conn.IsBackend {
+		akv["backend"] = true
 	}
 	for k, v := range kv {
 		akv[k] = v
@@ -96,6 +106,18 @@ loop:
 			if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
 				ws.log(llog.Error, "error setting conn", llog.KV{"err": err})
 			}
+
+		case p := <-ws.rConn.pubCh:
+			ws.enc.Encode(p)
+		}
+	}
+
+	for ch := range ws.subs {
+		if err := ws.unsub(ch); err != nil {
+			ws.log(llog.Error, "error unsubbing during teardown", llog.KV{
+				"channel": ch,
+				"err":     err,
+			})
 		}
 	}
 
@@ -136,22 +158,24 @@ type Error struct {
 	From  json.RawMessage `json:"from"`
 }
 
-func (ws *wsConn) writeError(m json.RawMessage, err error) {
+func (ws *wsConn) writeError(m json.RawMessage, logMsg string, err error) {
 	ws.enc.Encode(Error{
 		Error: err,
 		From:  m,
 	})
+	if logMsg != "" {
+		ws.log(llog.Error, logMsg, llog.KV{"err": err})
+	}
 }
 
 type cmdInfo struct {
-	m         json.RawMessage
-	isBackend bool
+	m json.RawMessage
 }
 
 func (ws *wsConn) cmd(m json.RawMessage) {
 	var cmdBase Command
 	if err := json.Unmarshal(m, &cmdBase); err != nil {
-		ws.writeError(m, err)
+		ws.writeError(m, "", err)
 		return
 	}
 
@@ -159,15 +183,17 @@ func (ws *wsConn) cmd(m json.RawMessage) {
 		m: m,
 	}
 
-	if cmdBase.Signature != "" && Auth.Verify(cmdBase.Signature, ws.ID) {
-		ci.isBackend = true
-	}
-
 	switch cmdBase.Command {
 	case "echo":
 		ws.cmdEcho(ci)
 	case "auth":
 		ws.cmdAuth(ci)
+	case "pub":
+		ws.cmdPub(ci)
+	case "sub":
+		ws.cmdSub(ci)
+	case "unsub":
+		ws.cmdUnsub(ci)
 	}
 }
 
@@ -182,7 +208,7 @@ type CommandEcho struct {
 func (ws *wsConn) cmdEcho(ci cmdInfo) {
 	var res CommandEcho
 	if err := json.Unmarshal(ci.m, &res); err != nil {
-		ws.writeError(ci.m, err)
+		ws.writeError(ci.m, "", err)
 		return
 	}
 	ws.log(llog.Info, "echo cmd", llog.KV{"message": res.Message})
@@ -202,10 +228,17 @@ type CommandAuth struct {
 func (ws *wsConn) cmdAuth(ci cmdInfo) {
 	var args CommandAuth
 	if err := json.Unmarshal(ci.m, &args); err != nil {
-		ws.writeError(ci.m, err)
+		ws.writeError(ci.m, "", err)
 		return
+	}
+
+	if Auth.Verify(args.Signature, string(ws.Conn.ID)) {
+		if len(ws.subs) > 0 {
+			ws.writeError(ci.m, "", errors.New("cannot become backend with active subs"))
+		}
+		ws.Conn.IsBackend = true
 	} else if !Auth.Verify(args.Signature, args.Presence) {
-		ws.writeError(ci.m, errors.New("invalid signature"))
+		ws.writeError(ci.m, "", errInvalidSig)
 		return
 	}
 
@@ -213,8 +246,87 @@ func (ws *wsConn) cmdAuth(ci cmdInfo) {
 	ws.log(llog.Info, "auth cmd", nil)
 
 	if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
-		ws.log(llog.Error, "error setting cron (cmd)", llog.KV{"err": err})
-		ws.writeError(ci.m, err)
+		ws.writeError(ci.m, "error setting conn (cmd)", err)
+		return
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+// CommandAuth is used to publish a message to one or more channels
+type CommandPub struct {
+	Command
+	Channel string           `json:"channel"`
+	Message *json.RawMessage `json:"message"`
+}
+
+func (ws *wsConn) cmdPub(ci cmdInfo) {
+	var args CommandPub
+	if err := json.Unmarshal(ci.m, &args); err != nil {
+		ws.writeError(ci.m, "", err)
+		return
+	}
+	ws.log(llog.Debug, "pub", llog.KV{"ch": args.Channel})
+
+	err := distr.Publish(distr.Pub{
+		Conn:    ws.Conn,
+		Channel: args.Channel,
+		Message: args.Message,
+	})
+	if err != nil {
+		ws.writeError(ci.m, "error publishing", err)
+		return
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+type CommandSub struct {
+	Command
+	Channel string `json:"channel"`
+}
+
+func (ws *wsConn) cmdSub(ci cmdInfo) {
+	var args CommandSub
+	if err := json.Unmarshal(ci.m, &args); err != nil {
+		ws.writeError(ci.m, "", err)
+		return
+	}
+	ws.log(llog.Debug, "sub", llog.KV{"ch": args.Channel})
+
+	if err := distr.Subscribe(ws.Conn, args.Channel); err != nil {
+		ws.writeError(ci.m, "error subscribing", err)
+		return
+	}
+
+	ws.subs[args.Channel] = struct{}{}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+type CommandUnsub struct {
+	Command
+	Channel string `json:"channel"`
+}
+
+func (ws *wsConn) unsub(ch string) error {
+	if err := distr.Unsubscribe(ws.Conn, ch); err != nil {
+		return err
+	}
+	delete(ws.subs, ch)
+	return nil
+}
+
+func (ws *wsConn) cmdUnsub(ci cmdInfo) {
+	var args CommandUnsub
+	if err := json.Unmarshal(ci.m, &args); err != nil {
+		ws.writeError(ci.m, "", err)
+		return
+	}
+	ws.log(llog.Debug, "unsub", llog.KV{"ch": args.Channel})
+
+	if err := ws.unsub(args.Channel); err != nil {
+		ws.writeError(ci.m, "error unsubscribing", err)
 		return
 	}
 }
