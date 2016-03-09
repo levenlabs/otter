@@ -7,13 +7,13 @@ any time.
 
 ## Features
 
-* Token-based authentication
+* Signature-based authentication
 * Publish/Subscribe to arbitrarily named channels
 * Presence information (i.e. named clients)
 * Per-channel list of clients subscribed
 * Alerts to backend on client subscribing, unsubscribing, or disconnecting
 * Redis or redis cluster used as backend, multiple otter instances can run
-  independantly and be used interchangeably
+  independently and be used interchangeably
 
 ## Model
 
@@ -26,9 +26,9 @@ that channel will receive it.
 
 The interaction on the client-side is fairly straightforward:
 
-* (Possibly optional, depending on config) Authenticate connection with token
-  previously retrieved from backend. Authentication also includes presence
-  information.
+* (Possibly optional, depending on config) Authenticate connection with
+  signature previously retrieved from backend. Authentication also includes
+  presence information.
 * Subscribe to desired channels.
 * Read publishes from these channels.
 * Publish to any channel to communicate with backend. A channel does not need to
@@ -36,11 +36,12 @@ The interaction on the client-side is fairly straightforward:
 
 The interaction for the backend is fairly similar:
 
+* Authenticate to prove that connection is backend.
 * Subscribe to desired channels.
 * Receive publishes from clients on these channels.
 * Send publishes to clients on any channel. A channel does not need to be
   subscribed to to be published to.
-* Provide authentication tokens out-of-band, if necessary.
+* Provide authentication signatures to clients out-of-band, if necessary.
 
 ## Interfaces
 
@@ -91,17 +92,15 @@ The `from` field will contain the original command object which generated this
 error, and any extra fields which were sent with it.
 
 The commands available over the websocket interface are not likely to generate
-errors. Subscribe and publish should never fail, and auth will only fail if the
-generated token is incorrect. If there was a database error then the command can
-simply be retried with the given information.
+errors. Auth will only fail if the generated signature is incorrect. If there
+was a database error then the command can simply be retried with the given
+information.
 
 #### auth
 
-TODO describe new signatures, don't ever use the word "token"
-
-When a client connects it may authenticate using an authentication token which
-signs a presence string. The authentication token is a SHA256-HMAC of the
-precense string and a secret key which the backend app and otter share. The
+When a client connects it may authenticate using an authentication signature
+which signs a presence string. The authentication signature is a SHA256-HMAC of
+the presence string and a secret key which the backend app and otter share. The
 presence string is completely arbitrary, and may contain any information you
 wish to use to identify a client.
 
@@ -109,19 +108,41 @@ wish to use to identify a client.
 {
     "command":"auth",
     "presence":"arbitrary text",
-    "signature":"<sha256hmac(presence_text, secret_key)>"
+    "signature":"signatureOf(presence_text)"
 }
 ```
 
-Backend applications do not need to call the auth command, they do, however,
-need to send a `signature` field on all commands the do send. This signature
-should be the SHA256-HMAC of their connection ID and the shared secret.
+Backend applications do not sign a presence string. Instead they sign the id of
+their own connection which was sent when they first connected.
+
+```json
+{
+    "command":"auth",
+    "signature":"signatureOf(conn_id)"
+}
+```
+
+##### Signatures
+
+The backend application is what actually generates these signatures and gives
+them to the clients through some other means. A secret is shared between all
+otter instances and backend application instances, and is used for this purpose.
+A signature of some string `arbitrary_string` is generated like so:
+
+```
+// hex encoded result of
+SHA256HMAC(current_timestamp + "_" + arbitrary_string, secret)
+```
+
+where `current_timestamp` is the unix timestamp in string form.
 
 #### sub
 
-Used to subscribe to a channel. Once this is received otter will begin sending
-all backend application publishes to that channel. If the connection is already
-subscribed then nothing happens.
+Used to subscribe to a channel and begin receiving publishes from it. If a
+client subscribes, all backend applications subscribed to the channel will
+receive a message that the subscribe happened.
+
+If the connection is already subscribed then nothing happend.
 
 ```json
 {
@@ -132,8 +153,11 @@ subscribed then nothing happens.
 
 #### unsub
 
-Used to unsubscribe from a channel. If the connection is not subscribed then
-nothing happens.
+Used to unsubscribe from a channel. If a client unsubscribes, all backend
+applications subscribed to the channel will receive a message the the
+unsubscribe happened.
+
+If the connection is not subscribed then nothing happens.
 
 ```json
 {
