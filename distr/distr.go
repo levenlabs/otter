@@ -6,6 +6,7 @@ package distr
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/levenlabs/go-llog"
@@ -112,20 +113,22 @@ func channelKey(nodeID, channel string, isBackend bool) string {
 // the channel. Backend connections get their own set.
 func Subscribe(c conn.Conn, channel string) error {
 	k := channelKey(c.ID.NodeID(), channel, c.IsBackend)
-	return cmder.Cmd("SADD", k, c.ID).Err
+	return cmder.Cmd("ZADD", k, time.Now().UnixNano(), c.ID).Err
 }
 
 // Unsubscribe removes the given connection from the set of connections
 // subscribed to the channel
 func Unsubscribe(c conn.Conn, channel string) error {
 	k := channelKey(c.ID.NodeID(), channel, c.IsBackend)
-	return cmder.Cmd("SREM", k, c.ID).Err
+	return cmder.Cmd("ZREM", k, c.ID).Err
 }
 
 // GetSubscribed returns the set of connections on the given node which are
 // subscribed to the given channel. Does not include backend connections.
-func GetSubscribed(nodeID, channel string, backend bool) ([]conn.ID, error) {
-	l, err := cmder.Cmd("SMEMBERS", channelKey(nodeID, channel, backend)).List()
+func GetSubscribed(nodeID, channel string, backend bool, timeout time.Duration) ([]conn.ID, error) {
+	k := channelKey(nodeID, channel, backend)
+	tlower := time.Now().Add(-timeout).UnixNano()
+	l, err := cmder.Cmd("ZRANGEBYSCORE", k, tlower, "+inf").List()
 	if err != nil {
 		return nil, err
 	}
@@ -135,4 +138,34 @@ func GetSubscribed(nodeID, channel string, backend bool) ([]conn.ID, error) {
 		cc[i] = conn.ID(l[i])
 	}
 	return cc, nil
+}
+
+// CleanChannels runs through all the channels in the cluster and removes
+// entries from them that are older than the given timeout. Only operates on
+// frontend/backend subs in a single call, so this will probably have to be
+// called twice
+func CleanChannels(backend bool, timeout time.Duration) {
+	ch := make(chan string)
+	var err error
+	go func() {
+		err = util.Scan(cmder, ch, "SCAN", "", channelKey("*", "*", backend))
+	}()
+	tupper := time.Now().Add(-timeout).UnixNano()
+	tupperStr := "(" + strconv.FormatInt(tupper, 10)
+	for k := range ch {
+		cerr := cmder.Cmd("ZREMRANGEBYSCORE", k, "-inf", tupperStr).Err
+		if cerr != nil {
+			llog.Error("error cleaning channel", llog.KV{
+				"key":     k,
+				"backend": backend,
+				"err":     cerr,
+			})
+		}
+	}
+	if err != nil {
+		llog.Error("error scanning for channels to clean", llog.KV{
+			"backend": backend,
+			"err":     err,
+		})
+	}
 }

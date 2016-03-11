@@ -104,7 +104,15 @@ loop:
 
 		case <-connSetTick.C:
 			if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
-				ws.log(llog.Error, "error setting conn", llog.KV{"err": err})
+				ws.log(llog.Error, "error re-setting conn", llog.KV{"err": err})
+			}
+			for ch := range ws.subs {
+				if err := distr.Subscribe(ws.Conn, ch); err != nil {
+					ws.log(llog.Error, "error re-subscribing conn", llog.KV{
+						"err":     err,
+						"channel": ch,
+					})
+				}
 			}
 
 		case p := <-ws.rConn.pubCh:

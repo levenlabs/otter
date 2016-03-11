@@ -2,6 +2,7 @@ package ws
 
 import (
 	"sync"
+	"time"
 
 	"github.com/levenlabs/go-llog"
 	"github.com/levenlabs/otter/conn"
@@ -36,13 +37,14 @@ func Init(numReaders int) {
 	for i := 0; i < numReaders; i++ {
 		go pubReader(i)
 	}
+	go cleanup()
 }
 
 func pubReader(i int) {
 	for p := range distr.PubCh {
 		kv := llog.KV{"ch": p.Channel, "i": i}
 
-		ids, err := distr.GetSubscribed(conn.NodeID, p.Channel, !p.Conn.IsBackend)
+		ids, err := distr.GetSubscribed(conn.NodeID, p.Channel, !p.Conn.IsBackend, connSetTimeout)
 		if err != nil {
 			kv["err"] = err
 			llog.Error("error getting subscribed", kv)
@@ -62,5 +64,12 @@ func pubReader(i int) {
 			default:
 			}
 		}
+	}
+}
+
+func cleanup() {
+	for range time.Tick(connSetTimeout / 2) {
+		distr.CleanChannels(false, connSetTimeout)
+		distr.CleanChannels(true, connSetTimeout)
 	}
 }

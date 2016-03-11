@@ -41,31 +41,48 @@ func TestSubUnsub(t *T) {
 	cb.IsBackend = true
 	ch := testutil.RandStr()
 
-	assertSubscribed := func(clients, backend []conn.ID) {
-		l, err := GetSubscribed(conn.NodeID, ch, false)
+	assertSubscribed := func(timeout time.Duration, clients, backend []conn.ID) {
+		l, err := GetSubscribed(conn.NodeID, ch, false, timeout)
 		assert.Nil(t, err)
 		assert.Equal(t, clients, l)
 
-		l, err = GetSubscribed(conn.NodeID, ch, true)
+		l, err = GetSubscribed(conn.NodeID, ch, true, timeout)
 		assert.Nil(t, err)
 		assert.Equal(t, backend, l)
 	}
 
-	assertSubscribed([]conn.ID{}, []conn.ID{})
+	assertSubscribed(1*time.Second, []conn.ID{}, []conn.ID{})
 
 	require.Nil(t, Subscribe(c, ch))
-	assertSubscribed([]conn.ID{c.ID}, []conn.ID{})
+	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{})
 	require.Nil(t, Subscribe(cb, ch))
-	assertSubscribed([]conn.ID{c.ID}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{cb.ID})
 
-	// Make sure duplicate subscribing doesn't do anythign
+	// Make sure duplicate subscribing doesn't do anything
 	require.Nil(t, Subscribe(c, ch))
-	assertSubscribed([]conn.ID{c.ID}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{cb.ID})
 	require.Nil(t, Subscribe(cb, ch))
-	assertSubscribed([]conn.ID{c.ID}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{cb.ID})
+
+	// Make sure timeout on GetSubscribed does the right thing
+	time.Sleep(100 * time.Millisecond)
+	assertSubscribed(100*time.Millisecond, []conn.ID{}, []conn.ID{})
 
 	require.Nil(t, Unsubscribe(c, ch))
-	assertSubscribed([]conn.ID{}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.ID{}, []conn.ID{cb.ID})
 	require.Nil(t, Unsubscribe(cb, ch))
-	assertSubscribed([]conn.ID{}, []conn.ID{})
+	assertSubscribed(1*time.Second, []conn.ID{}, []conn.ID{})
+
+	// Make sure cleanup works correctly
+	require.Nil(t, Subscribe(c, ch))
+	require.Nil(t, Subscribe(cb, ch))
+	time.Sleep(100 * time.Millisecond)
+	CleanChannels(true, 100*time.Millisecond)
+	CleanChannels(false, 100*time.Millisecond)
+	zcount, err := cmder.Cmd("ZCARD", channelKey(conn.NodeID, ch, false)).Int()
+	require.Nil(t, err)
+	assert.Zero(t, zcount)
+	zcount, err = cmder.Cmd("ZCARD", channelKey(conn.NodeID, ch, true)).Int()
+	require.Nil(t, err)
+	assert.Zero(t, zcount)
 }
