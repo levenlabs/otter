@@ -10,7 +10,6 @@ import (
 
 	"github.com/levenlabs/go-llog"
 	"github.com/levenlabs/golib/testutil"
-	"github.com/levenlabs/otter/auth"
 	"github.com/levenlabs/otter/conn"
 	"github.com/levenlabs/otter/distr"
 	"github.com/stretchr/testify/assert"
@@ -22,8 +21,7 @@ func init() {
 	llog.SetLevel(llog.DebugLevel)
 
 	distr.Init("127.0.0.1:6379", 1, 3)
-	Init(3)
-	Auth = auth.Auth{Key: testutil.RandStr()}
+	Init(testutil.RandStr(), 3)
 
 	srv := httptest.NewServer(NewHandler())
 	u, _ := url.Parse(srv.URL)

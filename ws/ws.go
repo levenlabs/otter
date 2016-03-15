@@ -23,6 +23,12 @@ var (
 	errInvalidSig = errors.New("invalid signature")
 )
 
+// Initializes connection routing
+func Init(secret string, numReaders int) {
+	Auth.Key = secret
+	routerInit(numReaders)
+}
+
 // NewHandler returns an http.Handler which handles the websocket interface
 func NewHandler() http.Handler {
 	return websocket.Server{Handler: handler}

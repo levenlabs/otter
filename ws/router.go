@@ -32,7 +32,7 @@ func getRConn(id conn.ID) (rConn, bool) {
 	return rc, ok
 }
 
-func Init(numReaders int) {
+func routerInit(numReaders int) {
 	llog.Info("starting PubCh readers", llog.KV{"numReaders": numReaders})
 	for i := 0; i < numReaders; i++ {
 		go pubReader(i)

@@ -27,6 +27,10 @@ func main() {
 		Default:     "http://:4444/ws",
 	})
 	l.Add(lever.Param{
+		Name:        "--auth-secret",
+		Description: "secret key to use to verify connection presence information. Must be the same across all otter nodes and backend applications",
+	})
+	l.Add(lever.Param{
 		Name:        "--redis-addr",
 		Description: "Address of redis node to use. If node is in a cluster the rest o f the cluster will be discovered automatically",
 		Default:     "127.0.0.1:6379",
@@ -42,6 +46,11 @@ func main() {
 		Default:     "10",
 	})
 	l.Parse()
+
+	secret, _ := l.ParamStr("--auth-secret")
+	if secret == "" {
+		llog.Fatal("--auth-secret is required")
+	}
 
 	redisAddr, _ := l.ParamStr("--redis-addr")
 	redisPoolSize, _ := l.ParamInt("--redis-pool-size")
@@ -60,7 +69,7 @@ func main() {
 	}
 
 	distr.Init(redisAddr, redisPoolSize, redisNumSubConns)
-	ws.Init(redisNumSubConns)
+	ws.Init(secret, redisNumSubConns)
 
 	http.Handle(wsURL.Path, ws.NewHandler())
 	llog.Info("websocket interface listening", llog.KV{"addr": wsURL})
