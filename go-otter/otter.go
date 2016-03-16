@@ -38,6 +38,7 @@ import (
 
 	"golang.org/x/net/websocket"
 
+	"github.com/levenlabs/go-srvclient"
 	"github.com/levenlabs/otter/auth"
 	"github.com/levenlabs/otter/distr"
 )
@@ -82,6 +83,7 @@ func (c Client) randURL(scheme string, subs ...string) (string, error) {
 		scheme += "s"
 	}
 	addr := c.Addrs[rand.Intn(len(c.Addrs))]
+	addr = srvclient.MaybeSRV(addr)
 	var presence, sig string
 	var err error
 	if c.PresenceFunc != nil {
