@@ -48,6 +48,7 @@ func pubReader(i int) {
 		if err != nil {
 			kv["err"] = err
 			llog.Error("error getting subscribed", kv)
+			continue
 		}
 
 		for _, id := range ids {
@@ -58,10 +59,10 @@ func pubReader(i int) {
 
 			select {
 			case rc.pubCh <- p:
-			// TODO do we actually need closeCh here? doesn't really make a
-			// difference I don't think
 			case <-rc.closeCh:
 			default:
+				kv["id"] = id
+				llog.Error("pubCh buffer full", kv)
 			}
 		}
 	}

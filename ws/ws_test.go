@@ -1,10 +1,13 @@
 package ws
 
 import (
+	"bytes"
 	"encoding/json"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	. "testing"
 	"time"
 
@@ -24,15 +27,7 @@ func init() {
 	Init(testutil.RandStr(), 3)
 
 	srv := httptest.NewServer(NewHandler())
-	u, _ := url.Parse(srv.URL)
-	u.Scheme = "ws"
-	testRawConn = func() *websocket.Conn {
-		c, err := websocket.Dial(u.String(), "", u.String())
-		if err != nil {
-			panic(err)
-		}
-		return c
-	}
+	testURL, _ = url.Parse(srv.URL)
 
 	// We do this to ensure the tests don't get hung on something
 	go func() {
@@ -41,27 +36,39 @@ func init() {
 	}()
 }
 
-var testRawConn func() *websocket.Conn
+var testURL *url.URL
 
-func testConn() (*websocket.Conn, conn.ID) {
-	c := testRawConn()
-	var cc conn.Conn
-	if err := websocket.JSON.Receive(c, &cc); err != nil {
-		panic(err)
-	}
-	return c, cc.ID
+func makeTestURL(scheme, presence string, subs ...string) string {
+	sig := Auth.Sign(presence)
+	u := *testURL
+	u.Scheme = scheme
+	return u.String() + "/" + strings.Join(subs, ",") + "?presence=" + presence + "&sig=" + sig
 }
 
-func testBackendConn() (*websocket.Conn, conn.ID) {
-	c, cID := testConn()
-	args := CommandAuth{
-		Command:   Command{Command: "auth"},
-		Signature: Auth.Sign(string(cID)),
+func testConn(backend bool, subs ...string) (*websocket.Conn, string) {
+	presence := "backend"
+	if !backend {
+		presence = testutil.RandStr()
 	}
-	if err := websocket.JSON.Send(c, args); err != nil {
+	u := makeTestURL("ws", presence, subs...)
+
+	c, err := websocket.Dial(u, "", u)
+	if err != nil {
 		panic(err)
 	}
-	return c, cID
+	return c, presence
+}
+
+func testPub(presence, msg string, subs ...string) {
+	u := makeTestURL("http", presence, subs...)
+	b, _ := json.Marshal(msg)
+	r, err := http.NewRequest("POST", u, bytes.NewBuffer(b))
+	if err != nil {
+		panic(err)
+	}
+	if _, err := http.DefaultClient.Do(r); err != nil {
+		panic(err)
+	}
 }
 
 func requireRcv(t *T, c *websocket.Conn, i interface{}) {
@@ -75,110 +82,54 @@ func requireNoRcv(t *T, c *websocket.Conn) {
 	assert.True(t, err.(*net.OpError).Timeout())
 }
 
-func requireWrite(t *T, c *websocket.Conn, i interface{}) {
-	err := websocket.JSON.Send(c, i)
-	require.Nil(t, err)
-}
-
 func TestNewConn(t *T) {
-	c := testRawConn()
-	var cc conn.Conn
-	requireRcv(t, c, &cc)
-	assert.NotEmpty(t, cc.ID)
-	assert.Empty(t, cc.Presence)
+	c, presence := testConn(false)
+	time.Sleep(100 * time.Millisecond)
 
-	rc, ok := getRConn(cc.ID)
-	assert.True(t, ok)
-
-	cc2, err := distr.GetConn(cc.ID)
-	require.Nil(t, err)
-	assert.Equal(t, cc, cc2)
-
-	c.Close()
-	_, ok = <-rc.closeCh
-	assert.False(t, ok)
-	_, ok = getRConn(cc.ID)
-	assert.False(t, ok)
-
-	cc2, err = distr.GetConn(cc.ID)
-	require.Nil(t, err)
-	assert.Equal(t, conn.Conn{}, cc2)
-}
-
-func TestEcho(t *T) {
-	c, _ := testConn()
-	out := CommandEcho{
-		Command: Command{Command: "echo"},
-		Message: testutil.RandStr(),
+	assert.Len(t, r, 1)
+	var id conn.ID
+	var rc rConn
+	for id, rc = range r {
+		break
 	}
-	requireWrite(t, c, out)
-	var in CommandEcho
-	requireRcv(t, c, &in)
-	assert.Equal(t, out, in)
-}
-
-func TestAuth(t *T) {
-	c, id := testConn()
-	pres := testutil.RandStr()
-	args := CommandAuth{
-		Command:   Command{Command: "auth"},
-		Presence:  pres,
-		Signature: Auth.Sign(pres),
-	}
-	requireWrite(t, c, args)
-	time.Sleep(20 * time.Millisecond)
+	require.NotEmpty(t, id)
 
 	cc, err := distr.GetConn(id)
 	require.Nil(t, err)
-	assert.Equal(t, conn.Conn{ID: id, Presence: pres}, cc)
+	assert.Equal(t, presence, cc.Presence)
 
-	args = CommandAuth{
-		Command:   Command{Command: "auth"},
-		Signature: Auth.Sign(string(id)),
-	}
-	requireWrite(t, c, args)
-	time.Sleep(20 * time.Millisecond)
+	c.Close()
+	_, ok := <-rc.closeCh
+	assert.False(t, ok)
+	_, ok = getRConn(id)
+	assert.False(t, ok)
 
-	cc, err = distr.GetConn(id)
+	cc, err = distr.GetConn(cc.ID)
 	require.Nil(t, err)
-	assert.Equal(t, conn.Conn{ID: id, IsBackend: true}, cc)
-}
-
-func testPubCmd(ch, msg string) CommandPub {
-	b, _ := json.Marshal(msg)
-	msgj := json.RawMessage(b)
-	return CommandPub{
-		Command: Command{Command: "pub"},
-		Channel: ch,
-		Message: &msgj,
-	}
+	assert.Equal(t, conn.Conn{}, cc)
 }
 
 func TestPubSubUnsub(t *T) {
-	c1, id1 := testConn()
-	c2, id2 := testConn()
-	cb, idb := testBackendConn()
 	ch := testutil.RandStr()
-
-	requireWrite(t, cb, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
+	cb, prb := testConn(true, ch)
 	time.Sleep(100 * time.Millisecond)
+	c1, pr1 := testConn(false, ch)
+	c2, pr2 := testConn(false, ch)
 
-	requireWrite(t, c1, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
-	requireWrite(t, c2, CommandSub{Command: Command{Command: "sub"}, Channel: ch})
-	time.Sleep(100 * time.Millisecond)
-
-	assertPubEqual := func(typ distr.PubType, from conn.ID, fromBackend bool, msg string, p distr.Pub) {
-		exp := distr.Pub{
-			Type:    typ,
-			Conn:    conn.Conn{ID: from, IsBackend: fromBackend},
-			Channel: ch,
+	assertPubEqual := func(typ distr.PubType, from string, msg string, p distr.Pub) {
+		assert.Equal(t, typ, p.Type)
+		if from == "backend" {
+			assert.True(t, p.Conn.IsBackend)
+		} else {
+			assert.Equal(t, from, p.Conn.Presence)
 		}
+		assert.Equal(t, ch, p.Channel)
+
 		if msg != "" {
 			b, _ := json.Marshal(msg)
 			msgj := json.RawMessage(b)
-			exp.Message = &msgj
+			assert.Equal(t, &msgj, p.Message)
 		}
-		assert.Equal(t, exp, p)
 	}
 
 	//////////////////////////
@@ -189,64 +140,49 @@ func TestPubSubUnsub(t *T) {
 	for i := 0; i < 2; i++ {
 		pb = distr.Pub{}
 		requireRcv(t, cb, &pb)
-		assert.True(t, pb.Conn.ID == id1 || pb.Conn.ID == id2)
-		pb.Conn.ID = ""
-		assertPubEqual(distr.PubTypeSub, "", false, "", pb)
+		assert.True(t, pb.Conn.Presence == pr1 || pb.Conn.Presence == pr2)
+		pb.Conn.Presence = ""
+		assertPubEqual(distr.PubTypeSub, "", "", pb)
 	}
 
 	//////////////////////////
 	// Publish from client, backend should get it
 
 	msg := testutil.RandStr()
-	requireWrite(t, c1, testPubCmd(ch, msg))
+	testPub(pr1, msg, ch)
 
 	pb = distr.Pub{}
 	requireRcv(t, cb, &pb)
-	assertPubEqual(distr.PubTypePub, id1, false, msg, pb)
+	assertPubEqual(distr.PubTypePub, pr1, msg, pb)
 
 	//////////////////////////
 	// Publish from backend, both clients should get it
 
 	msg = testutil.RandStr()
-	requireWrite(t, cb, testPubCmd(ch, msg))
+	testPub(prb, msg, ch)
 
 	var p1 distr.Pub
 	requireRcv(t, c1, &p1)
-	assertPubEqual(distr.PubTypePub, idb, true, msg, p1)
+	assertPubEqual(distr.PubTypePub, prb, msg, p1)
 
 	var p2 distr.Pub
 	requireRcv(t, c2, &p2)
-	assertPubEqual(distr.PubTypePub, idb, true, msg, p2)
+	assertPubEqual(distr.PubTypePub, prb, msg, p2)
 
 	//////////////////////////
-	// Unsub c1, then publish from backend, only c2 should get it
+	// Close c1, then publish from backend, only c2 should get it (duh). Also
+	// check for unsub message
 
-	requireWrite(t, c1, CommandUnsub{Command: Command{Command: "unsub"}, Channel: ch})
+	c1.Close()
 
 	pb = distr.Pub{}
 	requireRcv(t, cb, &pb)
-	assertPubEqual(distr.PubTypeUnsub, id1, false, "", pb)
+	assertPubEqual(distr.PubTypeUnsub, pr1, "", pb)
 
 	msg = testutil.RandStr()
-	requireWrite(t, cb, testPubCmd(ch, msg))
-
-	requireNoRcv(t, c1)
+	testPub(prb, msg, ch)
 
 	p2 = distr.Pub{}
 	requireRcv(t, c2, &p2)
-	assertPubEqual(distr.PubTypePub, idb, true, msg, p2)
-
-	//////////////////////////
-	// Close c2, then publish from backend, nothing should get it
-
-	c2.Close()
-
-	pb = distr.Pub{}
-	requireRcv(t, cb, &pb)
-	assertPubEqual(distr.PubTypeUnsub, id2, false, "", pb)
-
-	msg = testutil.RandStr()
-	requireWrite(t, cb, testPubCmd(ch, msg))
-
-	requireNoRcv(t, c1)
+	assertPubEqual(distr.PubTypePub, prb, msg, p2)
 }

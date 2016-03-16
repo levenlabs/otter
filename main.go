@@ -24,7 +24,7 @@ func main() {
 	l.Add(lever.Param{
 		Name:        "--ws-url",
 		Description: "Address and URL the websocket interface should listen on. Only http is currently supported",
-		Default:     "http://:4444/ws",
+		Default:     "http://:4444/subs",
 	})
 	l.Add(lever.Param{
 		Name:        "--auth-secret",
@@ -71,7 +71,7 @@ func main() {
 	distr.Init(redisAddr, redisPoolSize, redisNumSubConns)
 	ws.Init(secret, redisNumSubConns)
 
-	http.Handle(wsURL.Path, ws.NewHandler())
+	http.Handle(wsURL.Path, http.StripPrefix(wsURL.Path, ws.NewHandler()))
 	llog.Info("websocket interface listening", llog.KV{"addr": wsURL})
 	err = http.ListenAndServe(wsURL.Host, nil)
 	llog.Fatal("websocket interface failed", llog.KV{"addr": wsURL, "err": err})

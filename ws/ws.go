@@ -4,7 +4,9 @@ package ws
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/levenlabs/go-llog"
@@ -31,318 +33,154 @@ func Init(secret string, numReaders int) {
 
 // NewHandler returns an http.Handler which handles the websocket interface
 func NewHandler() http.Handler {
-	return websocket.Server{Handler: handler}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			pubHandler(w, r)
+		} else {
+			(websocket.Server{Handler: handler}).ServeHTTP(w, r)
+		}
+	})
 }
 
-func handler(c *websocket.Conn) {
-	ws := wsConn{
-		Conn: conn.New(),
-		rConn: rConn{
-			closeCh: make(chan struct{}),
-			pubCh:   make(chan distr.Pub, 10),
-		},
-		c:      c,
-		enc:    json.NewEncoder(c),
-		subs:   map[string]struct{}{},
-		readCh: make(chan json.RawMessage),
+func getConnInfo(r *http.Request) (conn.Conn, []string, error) {
+	p := r.URL.Path
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		p = p[i+1:]
 	}
-	ws.log(llog.Debug, "conn created", nil)
+	subs := strings.Split(p, ",")
+	subsF := subs[:0]
+	for _, sub := range subs {
+		if sub != "" {
+			subsF = append(subsF, sub)
+		}
+	}
 
-	ws.start()
-	ws.log(llog.Debug, "conn closed", nil)
+	c := conn.New()
+	presence, sig := r.FormValue("presence"), r.FormValue("sig")
+	if presence != "" && !Auth.Verify(sig, presence) {
+		return c, subs, errInvalidSig
+	}
+	if presence == "backend" {
+		c.IsBackend = true
+	} else if presence != "" {
+		c.Presence = presence
+	}
+	return c, subs, nil
+}
 
-	c.Close()
+func pubHandler(w http.ResponseWriter, r *http.Request) {
+	c, subs, err := getConnInfo(r)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	var msg json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	for _, ch := range subs {
+		err := distr.Publish(distr.Pub{
+			Type:    distr.PubTypePub,
+			Conn:    c,
+			Channel: ch,
+			Message: &msg,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			llog.Error("publish failed", llog.KV{
+				"presence": c.Presence,
+				"channel":  ch,
+				"err":      err,
+			})
+		}
+	}
 }
 
 type wsConn struct {
 	conn.Conn
 	rConn
-	c    *websocket.Conn
-	enc  *json.Encoder
-	subs map[string]struct{}
-
-	readCh chan json.RawMessage
+	c           *websocket.Conn
+	enc         *json.Encoder
+	subs        []string
+	connCloseCh chan struct{}
 }
 
-func (ws *wsConn) log(fn llog.LogFunc, msg string, kv llog.KV) {
-	akv := llog.KV{
-		"id": ws.ID,
-		// TODO this panics for some reason
-		//"remoteAddr": c.RemoteAddr().String(),
+func newWSConn(c *websocket.Conn) (wsConn, error) {
+	ws := wsConn{
+		rConn: rConn{
+			closeCh: make(chan struct{}),
+			pubCh:   make(chan distr.Pub, 10),
+		},
+		c:           c,
+		enc:         json.NewEncoder(c),
+		connCloseCh: make(chan struct{}),
 	}
-	if ws.Presence != "" {
-		akv["presence"] = ws.Presence
+
+	cc, subs, err := getConnInfo(c.Request())
+	if err != nil {
+		return ws, err
 	}
-	if ws.Conn.IsBackend {
-		akv["backend"] = true
-	}
-	for k, v := range kv {
-		akv[k] = v
-	}
-	fn(msg, akv)
+	ws.Conn = cc
+	ws.subs = subs
+
+	ws.log(llog.Debug, "conn created", nil)
+	return ws, nil
 }
 
-func (ws *wsConn) start() {
+func handler(c *websocket.Conn) {
+	ws, err := newWSConn(c)
+	if err != nil {
+		ws.writeError("", err, nil)
+		return
+	}
+
 	rlock.Lock()
 	r[ws.ID] = ws.rConn
 	rlock.Unlock()
 
-	connSetTick := time.NewTicker(connSetTimeout / 4)
-	defer connSetTick.Stop()
+	defer func() {
+		rlock.Lock()
+		close(ws.closeCh)
+		delete(r, ws.ID)
+		rlock.Unlock()
 
-	go ws.readLoop()
+		ws.log(llog.Debug, "conn closed", nil)
+		ws.c.Close()
+	}()
 
 	if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
-		ws.log(llog.Error, "error setting conn (init)", llog.KV{"err": err})
-		// We could theoretically exit here, but the conn data will be set at
-		// some point, so might as well just wait for it
+		ws.writeError("error setting conn (init)", err, nil)
+		return
 	}
 
-	ws.enc.Encode(ws.Conn)
-loop:
-	for {
-		select {
-		case m, ok := <-ws.readCh:
-			if !ok {
-				break loop
-			}
-			ws.cmd(m)
-
-		case <-connSetTick.C:
-			if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
-				ws.log(llog.Error, "error re-setting conn", llog.KV{"err": err})
-			}
-			for ch := range ws.subs {
-				if err := distr.Subscribe(ws.Conn, ch); err != nil {
-					ws.log(llog.Error, "error re-subscribing conn", llog.KV{
-						"err":     err,
-						"channel": ch,
-					})
-				}
-			}
-
-		case p := <-ws.rConn.pubCh:
-			ws.enc.Encode(p)
+	for _, ch := range ws.subs {
+		kv := llog.KV{"channel": ch}
+		if err := distr.Subscribe(ws.Conn, ch); err != nil {
+			ws.writeError("error subscribing (init)", err, kv)
+			return
+		}
+		if err := distr.Publish(distr.Pub{
+			Type:    distr.PubTypeSub,
+			Conn:    ws.Conn,
+			Channel: ch,
+		}); err != nil {
+			ws.writeError("error publishing subscribe", err, kv)
+			return
 		}
 	}
 
-	for ch := range ws.subs {
-		if err := ws.unsub(ch); err != nil {
+	ws.spin()
+
+	for _, ch := range ws.subs {
+		if err := distr.Unsubscribe(ws.Conn, ch); err != nil {
 			ws.log(llog.Error, "error unsubbing during teardown", llog.KV{
 				"channel": ch,
 				"err":     err,
 			})
 		}
-	}
-
-	if err := distr.UnsetConn(ws.Conn); err != nil {
-		ws.log(llog.Error, "error unsetting conn", llog.KV{"err": err})
-	}
-	rlock.Lock()
-	close(ws.closeCh)
-	delete(r, ws.ID)
-	rlock.Unlock()
-}
-
-func (ws *wsConn) readLoop() {
-	dec := json.NewDecoder(ws.c)
-	defer func() { close(ws.readCh) }()
-
-	for {
-		var m json.RawMessage
-		if err := dec.Decode(&m); err != nil {
-			return
-		}
-
-		ws.readCh <- m
-	}
-}
-
-// Command is used in all commands sent to otter. It includes the name of the
-// command, and optionally a signature of the connection id if the command is
-// coming from the backend application
-type Command struct {
-	Command   string `json:"command"`
-	Signature string `json:"signature,omitempty"`
-}
-
-// Error is pushed to the connection when something unexpected has occurred
-type Error struct {
-	Error error           `json:"error"`
-	From  json.RawMessage `json:"from"`
-}
-
-func (ws *wsConn) writeError(m json.RawMessage, logMsg string, err error) {
-	ws.enc.Encode(Error{
-		Error: err,
-		From:  m,
-	})
-	if logMsg != "" {
-		ws.log(llog.Error, logMsg, llog.KV{"err": err})
-	}
-}
-
-type cmdInfo struct {
-	m json.RawMessage
-}
-
-func (ws *wsConn) cmd(m json.RawMessage) {
-	var cmdBase Command
-	if err := json.Unmarshal(m, &cmdBase); err != nil {
-		ws.writeError(m, "", err)
-		return
-	}
-
-	ci := cmdInfo{
-		m: m,
-	}
-
-	switch cmdBase.Command {
-	case "echo":
-		ws.cmdEcho(ci)
-	case "auth":
-		ws.cmdAuth(ci)
-	case "pub":
-		ws.cmdPub(ci)
-	case "sub":
-		ws.cmdSub(ci)
-	case "unsub":
-		ws.cmdUnsub(ci)
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-// CommandEcho simply echos back the given message. Useful for testing
-type CommandEcho struct {
-	Command
-	Message string `json:"message"`
-}
-
-func (ws *wsConn) cmdEcho(ci cmdInfo) {
-	var res CommandEcho
-	if err := json.Unmarshal(ci.m, &res); err != nil {
-		ws.writeError(ci.m, "", err)
-		return
-	}
-	ws.log(llog.Info, "echo cmd", llog.KV{"message": res.Message})
-	ws.enc.Encode(res)
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-// CommandAuth is used to assign a "presence" string to a connection, so that it
-// can identify itself to other clients
-type CommandAuth struct {
-	Command
-	Presence  string `json:"presence"`
-	Signature string `json:"signature"`
-}
-
-func (ws *wsConn) cmdAuth(ci cmdInfo) {
-	var args CommandAuth
-	if err := json.Unmarshal(ci.m, &args); err != nil {
-		ws.writeError(ci.m, "", err)
-		return
-	}
-
-	if Auth.Verify(args.Signature, string(ws.Conn.ID)) {
-		if len(ws.subs) > 0 {
-			ws.writeError(ci.m, "", errors.New("cannot become backend with active subs"))
-		}
-		ws.Conn.IsBackend = true
-	} else if !Auth.Verify(args.Signature, args.Presence) {
-		ws.writeError(ci.m, "", errInvalidSig)
-		return
-	}
-
-	ws.Conn.Presence = args.Presence
-	ws.log(llog.Info, "auth cmd", nil)
-
-	if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
-		ws.writeError(ci.m, "error setting conn (cmd)", err)
-		return
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-// CommandAuth is used to publish a message to one or more channels
-type CommandPub struct {
-	Command
-	Channel string           `json:"channel"`
-	Message *json.RawMessage `json:"message"`
-}
-
-func (ws *wsConn) cmdPub(ci cmdInfo) {
-	var args CommandPub
-	if err := json.Unmarshal(ci.m, &args); err != nil {
-		ws.writeError(ci.m, "", err)
-		return
-	}
-	ws.log(llog.Debug, "pub", llog.KV{"ch": args.Channel})
-
-	err := distr.Publish(distr.Pub{
-		Type:    distr.PubTypePub,
-		Conn:    ws.Conn,
-		Channel: args.Channel,
-		Message: args.Message,
-	})
-	if err != nil {
-		ws.writeError(ci.m, "error publishing", err)
-		return
-	}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-type CommandSub struct {
-	Command
-	Channel string `json:"channel"`
-}
-
-func (ws *wsConn) cmdSub(ci cmdInfo) {
-	var args CommandSub
-	if err := json.Unmarshal(ci.m, &args); err != nil {
-		ws.writeError(ci.m, "", err)
-		return
-	}
-	ws.log(llog.Debug, "sub", llog.KV{"ch": args.Channel})
-
-	if err := distr.Subscribe(ws.Conn, args.Channel); err != nil {
-		ws.writeError(ci.m, "error subscribing", err)
-		return
-	}
-
-	if _, ok := ws.subs[args.Channel]; !ok && !ws.Conn.IsBackend {
-		if err := distr.Publish(distr.Pub{
-			Type:    distr.PubTypeSub,
-			Conn:    ws.Conn,
-			Channel: args.Channel,
-		}); err != nil {
-			ws.log(llog.Error, "error publishing subcribe", llog.KV{
-				"ch":  args.Channel,
-				"err": err,
-			})
-		}
-	}
-
-	ws.subs[args.Channel] = struct{}{}
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-type CommandUnsub struct {
-	Command
-	Channel string `json:"channel"`
-}
-
-func (ws *wsConn) unsub(ch string) error {
-	if err := distr.Unsubscribe(ws.Conn, ch); err != nil {
-		return err
-	}
-
-	if _, ok := ws.subs[ch]; ok && !ws.Conn.IsBackend {
 		if err := distr.Publish(distr.Pub{
 			Type:    distr.PubTypeUnsub,
 			Conn:    ws.Conn,
@@ -355,20 +193,85 @@ func (ws *wsConn) unsub(ch string) error {
 		}
 	}
 
-	delete(ws.subs, ch)
-	return nil
+	if err := distr.UnsetConn(ws.Conn); err != nil {
+		ws.log(llog.Error, "error unsetting conn", llog.KV{"err": err})
+	}
 }
 
-func (ws *wsConn) cmdUnsub(ci cmdInfo) {
-	var args CommandUnsub
-	if err := json.Unmarshal(ci.m, &args); err != nil {
-		ws.writeError(ci.m, "", err)
-		return
-	}
-	ws.log(llog.Debug, "unsub", llog.KV{"ch": args.Channel})
+func (ws *wsConn) spin() {
+	go ws.readSpin()
+	connSetTick := time.NewTicker(connSetTimeout / 4)
+	defer connSetTick.Stop()
 
-	if err := ws.unsub(args.Channel); err != nil {
-		ws.writeError(ci.m, "error unsubscribing", err)
-		return
+	for {
+		select {
+		case <-connSetTick.C:
+			if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
+				ws.log(llog.Error, "error re-setting conn", llog.KV{"err": err})
+			}
+			for _, ch := range ws.subs {
+				if err := distr.Subscribe(ws.Conn, ch); err != nil {
+					ws.log(llog.Error, "error re-subscribing conn", llog.KV{
+						"err":     err,
+						"channel": ch,
+					})
+				}
+			}
+
+		case p := <-ws.rConn.pubCh:
+			ws.enc.Encode(p)
+
+		case <-ws.connCloseCh:
+			return
+		}
 	}
+
+}
+
+// This is only used to determine if the connection has died, we don't actually
+// ever read anything from the client
+func (ws *wsConn) readSpin() {
+	defer func() { close(ws.connCloseCh) }()
+
+	b := make([]byte, 1)
+	for {
+		_, err := ws.c.Read(b)
+		if nerr, ok := err.(*net.OpError); ok && nerr.Timeout() {
+			continue
+		} else if err != nil {
+			return
+		}
+	}
+}
+
+func (ws *wsConn) log(fn llog.LogFunc, msg string, kv llog.KV) {
+	akv := llog.KV{
+		"id":         ws.ID,
+		"subs":       ws.subs,
+		"remoteAddr": ws.c.Request().RemoteAddr,
+	}
+	if ws.Presence != "" {
+		akv["presence"] = ws.Presence
+	}
+	for k, v := range kv {
+		akv[k] = v
+	}
+	fn(msg, akv)
+}
+
+// Error is pushed to the connection when something unexpected has occurred
+type Error struct {
+	Error error `json:"error"`
+}
+
+func (ws *wsConn) writeError(logMsg string, err error, kv llog.KV) {
+	ws.enc.Encode(Error{
+		Error: err,
+	})
+	kv2 := llog.KV{}
+	for k, v := range kv {
+		kv2[k] = v
+	}
+	kv2["err"] = err
+	ws.log(llog.Error, logMsg, kv2)
 }
