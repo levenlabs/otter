@@ -11,6 +11,7 @@ import (
 	"github.com/levenlabs/otter/distr"
 	"github.com/levenlabs/otter/ws"
 	"github.com/mediocregopher/lever"
+	"strings"
 )
 
 func main() {
@@ -24,7 +25,7 @@ func main() {
 	l.Add(lever.Param{
 		Name:        "--ws-url",
 		Description: "Address and URL the websocket interface should listen on. Only http is currently supported",
-		Default:     "http://:4444/subs",
+		Default:     "http://:4444/subs/",
 	})
 	l.Add(lever.Param{
 		Name:        "--auth-secret",
@@ -64,8 +65,10 @@ func main() {
 			"err":   err,
 		})
 	}
-	if wsURL.Path == "" {
-		wsURL.Path = "/"
+	// the path must end with a / since they'll be adding channel names onto
+	// the path they're sending here
+	if !strings.HasSuffix(wsURL.Path, "/") {
+		wsURL.Path += "/"
 	}
 
 	distr.Init(redisAddr, redisPoolSize, redisNumSubConns)
