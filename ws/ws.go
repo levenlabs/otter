@@ -83,7 +83,7 @@ func pubHandler(w http.ResponseWriter, r *http.Request) {
 
 	for _, ch := range subs {
 		err := distr.Publish(distr.Pub{
-			Type:    distr.PubTypePub,
+			Type:    "pub",
 			Conn:    c,
 			Channel: ch,
 			Message: &msg,
@@ -163,7 +163,7 @@ func handler(c *websocket.Conn) {
 			return
 		}
 		if err := distr.Publish(distr.Pub{
-			Type:    distr.PubTypeSub,
+			Type:    "sub",
 			Conn:    ws.Conn,
 			Channel: ch,
 		}); err != nil {
@@ -182,7 +182,7 @@ func handler(c *websocket.Conn) {
 			})
 		}
 		if err := distr.Publish(distr.Pub{
-			Type:    distr.PubTypeUnsub,
+			Type:    "unsub",
 			Conn:    ws.Conn,
 			Channel: ch,
 		}); err != nil {

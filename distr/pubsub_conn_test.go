@@ -15,7 +15,7 @@ func TestPublish(t *T) {
 
 	m := json.RawMessage(`{"foo":"blah","bar":"blahblah"}`)
 	p := Pub{
-		Type:    PubTypePub,
+		Type:    "pub",
 		Conn:    conn.New(),
 		Channel: testutil.RandStr(),
 		Message: &m,

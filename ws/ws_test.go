@@ -116,7 +116,7 @@ func TestPubSubUnsub(t *T) {
 	c1, pr1 := testConn(false, ch)
 	c2, pr2 := testConn(false, ch)
 
-	assertPubEqual := func(typ distr.PubType, from string, msg string, p distr.Pub) {
+	assertPubEqual := func(typ, from, msg string, p distr.Pub) {
 		assert.Equal(t, typ, p.Type)
 		if from == "backend" {
 			assert.True(t, p.Conn.IsBackend)
@@ -142,7 +142,7 @@ func TestPubSubUnsub(t *T) {
 		requireRcv(t, cb, &pb)
 		assert.True(t, pb.Conn.Presence == pr1 || pb.Conn.Presence == pr2)
 		pb.Conn.Presence = ""
-		assertPubEqual(distr.PubTypeSub, "", "", pb)
+		assertPubEqual("sub", "", "", pb)
 	}
 
 	//////////////////////////
@@ -153,7 +153,7 @@ func TestPubSubUnsub(t *T) {
 
 	pb = distr.Pub{}
 	requireRcv(t, cb, &pb)
-	assertPubEqual(distr.PubTypePub, pr1, msg, pb)
+	assertPubEqual("pub", pr1, msg, pb)
 
 	//////////////////////////
 	// Publish from backend, both clients should get it
@@ -163,11 +163,11 @@ func TestPubSubUnsub(t *T) {
 
 	var p1 distr.Pub
 	requireRcv(t, c1, &p1)
-	assertPubEqual(distr.PubTypePub, prb, msg, p1)
+	assertPubEqual("pub", prb, msg, p1)
 
 	var p2 distr.Pub
 	requireRcv(t, c2, &p2)
-	assertPubEqual(distr.PubTypePub, prb, msg, p2)
+	assertPubEqual("pub", prb, msg, p2)
 
 	//////////////////////////
 	// Close c1, then publish from backend, only c2 should get it (duh). Also
@@ -177,12 +177,12 @@ func TestPubSubUnsub(t *T) {
 
 	pb = distr.Pub{}
 	requireRcv(t, cb, &pb)
-	assertPubEqual(distr.PubTypeUnsub, pr1, "", pb)
+	assertPubEqual("unsub", pr1, "", pb)
 
 	msg = testutil.RandStr()
 	testPub(prb, msg, ch)
 
 	p2 = distr.Pub{}
 	requireRcv(t, c2, &p2)
-	assertPubEqual(distr.PubTypePub, prb, msg, p2)
+	assertPubEqual("pub", prb, msg, p2)
 }
