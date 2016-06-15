@@ -63,7 +63,7 @@ type Client struct {
 // Pub describes a publish message being received over a subscription connection
 type Pub distr.Pub
 
-// PresenceFuncs are used to provide a presence string and its signature for the
+// PresenceFunc is used to provide a presence string and its signature for the
 // otter client. First returned string is the presence string, second is the
 // signature.
 type PresenceFunc func() (string, string, error)
@@ -96,24 +96,30 @@ func (c Client) randURL(scheme string, subs ...string) (string, error) {
 
 // Subscribe is used to create a single otter connection which will listen for
 // incoming publishes from the given set of subscriptions. The publishes will be
-// pushed to the given channel. This method will block until a connection error
-// is encountered, then return that error.
+// pushed to the given channel.
+//
+// The returned error channel is buffered by 1, and will have an error written
+// to it if one is encountered, at which point this call is done.
 //
 // If stopCh is not nil, it can be close()'d by an separate go-routine to close
-// the subsription connection. The method will return nil in this case.
-func (c Client) Subscribe(pubCh chan<- Pub, stopCh chan struct{}, subs ...string) error {
+// the subsription connection. The returned error channel will be closed in this
+// case.
+func (c Client) Subscribe(pubCh chan<- Pub, stopCh chan struct{}, subs ...string) <-chan error {
+	errCh := make(chan error, 1)
+
 	u, err := c.randURL("ws", subs...)
 	if err != nil {
-		return err
+		errCh <- err
+		return errCh
 	}
 
 	conn, err := websocket.Dial(u, "", u)
 	if err != nil {
-		return err
+		errCh <- err
+		return errCh
 	}
-	innerStopCh := make(chan struct{})
-	defer close(innerStopCh)
 
+	innerStopCh := make(chan struct{})
 	go func() {
 		select {
 		case <-stopCh:
@@ -122,23 +128,22 @@ func (c Client) Subscribe(pubCh chan<- Pub, stopCh chan struct{}, subs ...string
 		conn.Close()
 	}()
 
-	var p Pub
-	for {
-		err = websocket.JSON.Receive(conn, &p)
-		if err != nil {
-			return err
-		}
-		pubCh <- p
-	}
+	go func() {
+		defer close(innerStopCh)
+		defer close(errCh)
 
-	select {
-	case <-stopCh:
-		return nil
-	case <-innerStopCh:
-		return nil
-	default:
-		return err
-	}
+		var p Pub
+		for {
+			err = websocket.JSON.Receive(conn, &p)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			pubCh <- p
+		}
+	}()
+
+	return errCh
 }
 
 // Publish will publish the given message to all the subs

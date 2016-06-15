@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/levenlabs/go-llog"
 	"github.com/levenlabs/otter/conn"
@@ -66,12 +67,15 @@ func main() {
 	}
 	if wsURL.Path == "" {
 		wsURL.Path = "/"
+	} else if !strings.HasSuffix(wsURL.Path, "/") {
+		wsURL.Path += "/"
 	}
 
 	distr.Init(redisAddr, redisPoolSize, redisNumSubConns)
 	ws.Init(secret, redisNumSubConns)
 
-	http.Handle(wsURL.Path, http.StripPrefix(wsURL.Path, ws.NewHandler()))
+	h := http.StripPrefix(wsURL.Path, ws.NewHandler())
+	http.Handle(wsURL.Path, h)
 	llog.Info("websocket interface listening", llog.KV{"addr": wsURL})
 	err = http.ListenAndServe(wsURL.Host, nil)
 	llog.Fatal("websocket interface failed", llog.KV{"addr": wsURL, "err": err})
