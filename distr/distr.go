@@ -145,14 +145,15 @@ func GetSubscribed(nodeID, channel string, backend bool, timeout time.Duration) 
 // frontend/backend subs in a single call, so this will probably have to be
 // called twice
 func CleanChannels(backend bool, timeout time.Duration) {
-	ch := make(chan string)
-	var err error
-	go func() {
-		err = util.Scan(cmder, ch, "SCAN", "", channelKey("*", "*", backend))
-	}()
 	tupper := time.Now().Add(-timeout).UnixNano()
 	tupperStr := "(" + strconv.FormatInt(tupper, 10)
-	for k := range ch {
+
+	it := util.NewScanner(cmder, util.ScanOpts{
+		Command: "SCAN",
+		Pattern: channelKey("*", "*", backend),
+	})
+	for it.HasNext() {
+		k := it.Next()
 		cerr := cmder.Cmd("ZREMRANGEBYSCORE", k, "-inf", tupperStr).Err
 		if cerr != nil {
 			llog.Error("error cleaning channel", llog.KV{
@@ -162,7 +163,7 @@ func CleanChannels(backend bool, timeout time.Duration) {
 			})
 		}
 	}
-	if err != nil {
+	if err := it.Err(); err != nil {
 		llog.Error("error scanning for channels to clean", llog.KV{
 			"backend": backend,
 			"err":     err,
