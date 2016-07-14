@@ -31,9 +31,10 @@ package otter
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"math/rand"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 
 	"golang.org/x/net/websocket"
@@ -46,18 +47,15 @@ import (
 // Client is used to connect and interact with otter servers. The only required
 // field is Addrs
 type Client struct {
-	// Addresses of otter instances. These will be picked from randomly when
-	// making connections to otter. This field should not be changed while there
-	// are active connections
-	Addrs []string
+	// URLs of otter instances. These will be picked from randomly when making
+	// connections to otter. This field should not be changed while there are
+	// active connections
+	URLs []string
 
 	// Used to generate presence strings for connections made by this client.
 	// This function will be called on every new connection made. If nil, no
 	// presence information is ever used
 	PresenceFunc
-
-	// Set to true if otter is using https
-	HTTPS bool
 }
 
 // Pub describes a publish message being received over a subscription connection
@@ -78,20 +76,30 @@ func BackendPresence(secret string) PresenceFunc {
 	}
 }
 
-func (c Client) randURL(scheme string, subs ...string) (string, error) {
-	if c.HTTPS {
-		scheme += "s"
-	}
-	addr := c.Addrs[rand.Intn(len(c.Addrs))]
-	addr = srvclient.MaybeSRV(addr)
+func (c Client) randURL(scheme string, subs ...string) (*url.URL, error) {
+	u := c.URLs[rand.Intn(len(c.URLs))]
+	u = srvclient.MaybeSRVURL(u)
 	var presence, sig string
 	var err error
 	if c.PresenceFunc != nil {
 		if presence, sig, err = c.PresenceFunc(); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	return fmt.Sprintf("%s://%s/subs/%s?presence=%s&sig=%s", scheme, addr, strings.Join(subs, ","), presence, sig), nil
+
+	uu, err := url.Parse(u)
+	if err != nil {
+		return nil, err
+	}
+	uu.Scheme = scheme
+	uu.Path = path.Join(uu.Path, strings.Join(subs, ","))
+
+	q := uu.Query()
+	q.Set("presence", presence)
+	q.Set("sig", sig)
+	uu.RawQuery = q.Encode()
+
+	return uu, nil
 }
 
 // Subscribe is used to create a single otter connection which will listen for
@@ -113,7 +121,7 @@ func (c Client) Subscribe(pubCh chan<- Pub, stopCh chan struct{}, subs ...string
 		return errCh
 	}
 
-	conn, err := websocket.Dial(u, "", u)
+	conn, err := websocket.Dial(u.String(), "", u.String())
 	if err != nil {
 		errCh <- err
 		return errCh
@@ -158,7 +166,7 @@ func (c Client) Publish(msg interface{}, subs ...string) error {
 		return err
 	}
 
-	r, err := http.NewRequest("POST", u, bytes.NewBuffer(b))
+	r, err := http.NewRequest("POST", u.String(), bytes.NewBuffer(b))
 	if err != nil {
 		return err
 	}
