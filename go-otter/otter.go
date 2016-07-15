@@ -92,7 +92,7 @@ func (c Client) randURL(scheme string, subs ...string) (*url.URL, error) {
 		return nil, err
 	}
 	uu.Scheme = scheme
-	uu.Path = path.Join(uu.Path, strings.Join(subs, ","))
+	uu.Path = path.Join(uu.Path, "subs", strings.Join(subs, ","))
 
 	q := uu.Query()
 	q.Set("presence", presence)
