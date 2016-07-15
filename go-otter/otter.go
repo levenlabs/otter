@@ -31,6 +31,7 @@ package otter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -51,7 +52,8 @@ import (
 type Client struct {
 	// URLs of otter instances. These will be picked from randomly when making
 	// connections to otter. This field should not be changed while there are
-	// active connections
+	// active connections. A URL should consist of a hostname, path, and
+	// scheme.
 	URLs []string
 
 	// Used to generate presence strings for connections made by this client.
@@ -80,21 +82,25 @@ func BackendPresence(secret string) PresenceFunc {
 
 func (c Client) randURL(scheme, suffix string, subs ...string) (*url.URL, error) {
 	u := c.URLs[rand.Intn(len(c.URLs))]
-	u = srvclient.MaybeSRVURL(u)
+	// we have to parse here so we can get the host out and update it
+	uu, err := url.Parse(u)
+	if err != nil {
+		return nil, err
+	}
+	if uu.Host == "" {
+		return nil, errors.New("invalid url sent")
+	}
+
+	uu.Host = srvclient.MaybeSRV(uu.Host)
 	var presence, sig string
-	var err error
 	if c.PresenceFunc != nil {
 		if presence, sig, err = c.PresenceFunc(); err != nil {
 			return nil, err
 		}
 	}
 
-	uu, err := url.Parse(u)
-	if err != nil {
-		return nil, err
-	}
 	uu.Scheme = scheme
-	uu.Path = path.Join(uu.Path, "subs", strings.Join(subs, ","))
+	uu.Path = path.Join(uu.Path, strings.Join(subs, ","))
 	if suffix != "" {
 		uu.Path = path.Join(uu.Path, suffix)
 	}
