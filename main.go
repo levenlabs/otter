@@ -65,9 +65,7 @@ func main() {
 			"err":   err,
 		})
 	}
-	if wsURL.Path == "" {
-		wsURL.Path = "/"
-	} else if !strings.HasSuffix(wsURL.Path, "/") {
+	if !strings.HasSuffix(wsURL.Path, "/") {
 		wsURL.Path += "/"
 	}
 

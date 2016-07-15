@@ -44,15 +44,15 @@ func pubReader(i int) {
 	for p := range distr.PubCh {
 		kv := llog.KV{"ch": p.Channel, "i": i}
 
-		ids, err := distr.GetSubscribed(conn.NodeID, p.Channel, !p.Conn.IsBackend, connSetTimeout)
+		conns, err := distr.GetSubscribed(conn.NodeID, p.Channel, !p.Conn.IsBackend, connSetTimeout)
 		if err != nil {
 			kv["err"] = err
 			llog.Error("error getting subscribed", kv)
 			continue
 		}
 
-		for _, id := range ids {
-			rc, ok := getRConn(id)
+		for _, c := range conns {
+			rc, ok := getRConn(c.ID)
 			if !ok {
 				continue
 			}
@@ -61,8 +61,7 @@ func pubReader(i int) {
 			case rc.pubCh <- p:
 			case <-rc.closeCh:
 			default:
-				kv["id"] = id
-				llog.Error("pubCh buffer full", kv)
+				llog.Error("pubCh buffer full", kv, llog.KV{"id": c.ID})
 			}
 		}
 	}

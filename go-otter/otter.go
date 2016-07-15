@@ -41,7 +41,9 @@ import (
 
 	"github.com/levenlabs/go-srvclient"
 	"github.com/levenlabs/otter/auth"
+	"github.com/levenlabs/otter/conn"
 	"github.com/levenlabs/otter/distr"
+	"github.com/levenlabs/otter/ws"
 )
 
 // Client is used to connect and interact with otter servers. The only required
@@ -76,7 +78,7 @@ func BackendPresence(secret string) PresenceFunc {
 	}
 }
 
-func (c Client) randURL(scheme string, subs ...string) (*url.URL, error) {
+func (c Client) randURL(scheme, suffix string, subs ...string) (*url.URL, error) {
 	u := c.URLs[rand.Intn(len(c.URLs))]
 	u = srvclient.MaybeSRVURL(u)
 	var presence, sig string
@@ -93,6 +95,9 @@ func (c Client) randURL(scheme string, subs ...string) (*url.URL, error) {
 	}
 	uu.Scheme = scheme
 	uu.Path = path.Join(uu.Path, "subs", strings.Join(subs, ","))
+	if suffix != "" {
+		uu.Path = path.Join(uu.Path, suffix)
+	}
 
 	q := uu.Query()
 	q.Set("presence", presence)
@@ -115,7 +120,7 @@ func (c Client) randURL(scheme string, subs ...string) (*url.URL, error) {
 func (c Client) Subscribe(pubCh chan<- Pub, stopCh chan struct{}, subs ...string) <-chan error {
 	errCh := make(chan error, 1)
 
-	u, err := c.randURL("ws", subs...)
+	u, err := c.randURL("ws", "", subs...)
 	if err != nil {
 		errCh <- err
 		return errCh
@@ -156,7 +161,7 @@ func (c Client) Subscribe(pubCh chan<- Pub, stopCh chan struct{}, subs ...string
 
 // Publish will publish the given message to all the subs
 func (c Client) Publish(msg interface{}, subs ...string) error {
-	u, err := c.randURL("http", subs...)
+	u, err := c.randURL("http", "", subs...)
 	if err != nil {
 		return err
 	}
@@ -173,4 +178,26 @@ func (c Client) Publish(msg interface{}, subs ...string) error {
 
 	_, err = http.DefaultClient.Do(r)
 	return err
+}
+
+// GetSubscribed returns the union of all the connection objects currently
+// subscribed to the given subs. The Client *must* be a backend application in
+// order to use this.
+func (c Client) GetSubscribed(subs ...string) ([]conn.Conn, error) {
+	u, err := c.randURL("http", "subbed", subs...)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.Get(u.String())
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var res ws.SubListRes
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+	return res.Conns, nil
 }
