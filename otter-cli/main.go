@@ -54,6 +54,11 @@ func main() {
 		Name:        "--pub",
 		Description: "Publishes the given json string to all the channels given",
 	})
+	l.Add(lever.Param{
+		Name:        "--list-subbed",
+		Description: "Lists all the connection objects subscribed to the given set of channels",
+		Flag:        true,
+	})
 	l.Parse()
 
 	ustr, _ := l.ParamStr("--otter-url")
@@ -107,6 +112,21 @@ func main() {
 		}
 		if err := c.Publish(msg, chs...); err != nil {
 			fatalf("error publishing: %s", err)
+		}
+		return
+	}
+
+	if l.ParamFlag("--list-subbed") {
+		conns, err := c.GetSubscribed(chs...)
+		if err != nil {
+			fatalf("error retrieving sub list: %s", err)
+		}
+		for _, c := range conns {
+			b, err := json.Marshal(c)
+			if err != nil {
+				fatalf("error marshalling json: %s", err)
+			}
+			fmt.Println(string(b))
 		}
 		return
 	}

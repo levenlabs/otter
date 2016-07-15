@@ -140,3 +140,27 @@ POST http://otterhost/subs/<channel1>,<channel2>?presence=arbitrary&sig=sig
 
 The POST body can be any arbitrary json, and will appear as the `message` field
 in the publishes that subscribed clients receive.
+
+## Listing
+
+It's possible for backend (and only backend!) applications to retrieve a list of
+currently subscribed clients for one or more channels:
+
+```
+GET http://otterhost/subs/<channel1>,<channel2>/subbed?presence=backend&sig=sig
+```
+
+Which will return a json object like so:
+
+```
+{
+    "conns":[
+        {"id":"adfasdfasdf", "presence":"maybe something"},
+        {"id":"adfasdjkljs", "presence":"maybe something else"},
+        {"id":"adsfjakdsf"}
+    ]
+}
+```
+
+If more than one channel is given, the returned set of connection objects will
+be the union of all the subbed connections for those two channels.

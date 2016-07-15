@@ -18,14 +18,14 @@ import (
 
 var connSetTimeout = 30 * time.Second
 
-// Needs to be set in order to properly handle authentication
+// Auth needs to be set in order to properly handle authentication
 var Auth auth.Auth
 
 var (
 	errInvalidSig = errors.New("invalid signature")
 )
 
-// Initializes connection routing
+// Init initializes connection routing
 func Init(secret string, numReaders int) {
 	Auth.Key = secret
 	routerInit(numReaders)
@@ -34,19 +34,25 @@ func Init(secret string, numReaders int) {
 // NewHandler returns an http.Handler which handles the websocket interface
 func NewHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		} else if r.URL.Path[0] == '/' {
+			r.URL.Path = r.URL.Path[1:]
+		}
+
 		if r.Method == "POST" {
 			pubHandler(w, r)
+		} else if r.Method == "GET" {
+			getHandler(w, r)
 		} else {
-			(websocket.Server{Handler: handler}).ServeHTTP(w, r)
+			http.Error(w, "invalid method", http.StatusMethodNotAllowed)
 		}
 	})
 }
 
 func getConnInfo(r *http.Request) (conn.Conn, []string, error) {
-	p := r.URL.Path
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		p = p[i+1:]
-	}
+	p := strings.SplitN(r.URL.Path, "/", 2)[0]
 	subs := strings.Split(p, ",")
 	subsF := subs[:0]
 	for _, sub := range subs {
@@ -96,6 +102,67 @@ func pubHandler(w http.ResponseWriter, r *http.Request) {
 				"err":      err,
 			})
 		}
+	}
+}
+
+func listSubbed(chs ...string) ([]conn.Conn, error) {
+	nIDs, err := distr.GetNodeIDs()
+	if err != nil {
+		return nil, err
+	}
+
+	m := map[conn.Conn]struct{}{}
+	for _, nID := range nIDs {
+		for _, ch := range chs {
+			cc, err := distr.GetSubscribed(nID, ch, false, connSetTimeout)
+			if err != nil {
+				return nil, err
+			}
+			for _, c := range cc {
+				m[c] = struct{}{}
+			}
+		}
+	}
+
+	res := make([]conn.Conn, 0, len(m))
+	for c := range m {
+		res = append(res, c)
+	}
+	return res, nil
+}
+
+// SubListRes is the structur that the list of connection objects from a call to
+// /subbed will be returned in
+type SubListRes struct {
+	Conns []conn.Conn `json:"conns"`
+}
+
+func getHandler(w http.ResponseWriter, r *http.Request) {
+	pp := strings.SplitN(r.URL.Path, "/", 2)
+	var suffix string
+	if len(pp) == 2 {
+		suffix = pp[1]
+	}
+
+	if suffix == "" {
+		(websocket.Server{Handler: handler}).ServeHTTP(w, r)
+
+	} else if suffix == "subbed" {
+		cc, subs, err := getConnInfo(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		} else if !cc.IsBackend {
+			http.Error(w, "not allowed", http.StatusForbidden)
+		}
+
+		conns, err := listSubbed(subs...)
+		if err != nil {
+			llog.Error("error getting subbed connections", llog.KV{"subs": subs, "err": err})
+			http.Error(w, err.Error(), http.StatusForbidden)
+		}
+
+		json.NewEncoder(w).Encode(SubListRes{Conns: conns})
 	}
 }
 

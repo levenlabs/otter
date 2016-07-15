@@ -9,6 +9,8 @@ import (
 	"github.com/satori/go.uuid"
 )
 
+//go:generate msgp
+
 // NodeID is the unique identifier for this node. It should be set before New
 // connections are generated
 var NodeID string
@@ -41,4 +43,16 @@ func New() Conn {
 	return Conn{
 		ID: ID(NodeID + idSep + baseID),
 	}
+}
+
+// MarshalBinary takes returns a binary string representation of the Conn
+func (c Conn) MarshalBinary() ([]byte, error) {
+	return c.MarshalMsg(nil)
+}
+
+// UnmarshalBinary unmarshals a binary string returned from MarshalBinary into
+// the Conn
+func (c *Conn) UnmarshalBinary(b []byte) error {
+	_, err := c.UnmarshalMsg(b)
+	return err
 }

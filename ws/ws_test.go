@@ -22,6 +22,7 @@ import (
 
 func init() {
 	llog.SetLevel(llog.DebugLevel)
+	conn.NodeID = testutil.RandStr()
 
 	distr.Init("127.0.0.1:6379", 1, 3)
 	Init(testutil.RandStr(), 3)
@@ -38,11 +39,19 @@ func init() {
 
 var testURL *url.URL
 
-func makeTestURL(scheme, presence string, subs ...string) string {
+func makeTestURL(scheme, presence, suffix string, subs ...string) string {
 	sig := Auth.Sign(presence)
 	u := *testURL
 	u.Scheme = scheme
-	return u.String() + "/" + strings.Join(subs, ",") + "?presence=" + presence + "&sig=" + sig
+	u.Path = "/" + strings.Join(subs, ",")
+	if suffix != "" {
+		u.Path += "/" + suffix
+	}
+	q := url.Values{}
+	q.Set("presence", presence)
+	q.Set("sig", sig)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func testConn(backend bool, subs ...string) (*websocket.Conn, string) {
@@ -50,7 +59,7 @@ func testConn(backend bool, subs ...string) (*websocket.Conn, string) {
 	if !backend {
 		presence = testutil.RandStr()
 	}
-	u := makeTestURL("ws", presence, subs...)
+	u := makeTestURL("ws", presence, "", subs...)
 
 	c, err := websocket.Dial(u, "", u)
 	if err != nil {
@@ -60,7 +69,7 @@ func testConn(backend bool, subs ...string) (*websocket.Conn, string) {
 }
 
 func testPub(presence, msg string, subs ...string) {
-	u := makeTestURL("http", presence, subs...)
+	u := makeTestURL("http", presence, "", subs...)
 	b, _ := json.Marshal(msg)
 	r, err := http.NewRequest("POST", u, bytes.NewBuffer(b))
 	if err != nil {
@@ -130,6 +139,19 @@ func TestPubSubUnsub(t *T) {
 			msgj := json.RawMessage(b)
 			assert.Equal(t, &msgj, p.Message)
 		}
+	}
+
+	//////////////////////////
+	// Make sure listing works
+	uu := makeTestURL("http", "backend", "subbed", ch)
+	resp, err := http.Get(uu)
+	require.Nil(t, err)
+	defer resp.Body.Close()
+	var res SubListRes
+	require.Nil(t, json.NewDecoder(resp.Body).Decode(&res))
+	assert.Equal(t, 2, len(res.Conns))
+	for _, c := range res.Conns {
+		assert.True(t, c.Presence == pr1 || c.Presence == pr2)
 	}
 
 	//////////////////////////

@@ -4,9 +4,9 @@
 package distr
 
 import (
-	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/levenlabs/go-llog"
@@ -69,7 +69,7 @@ func connKey(cID conn.ID) string {
 // SetConn sets the given connection's Conn struct into redis for the given
 // amount of time
 func SetConn(c conn.Conn, timeout time.Duration) error {
-	b, err := json.Marshal(c)
+	b, err := c.MarshalBinary()
 	if err != nil {
 		return err
 	}
@@ -98,44 +98,68 @@ func GetConn(cID conn.ID) (conn.Conn, error) {
 		return c, nil
 	}
 
-	err = json.Unmarshal(b, &c)
+	err = c.UnmarshalBinary(b)
 	return c, err
+}
+
+func channelKeyPrefix(nodeID string) string {
+	return fmt.Sprintf("channel:{%s}", nodeID)
 }
 
 func channelKey(nodeID, channel string, isBackend bool) string {
 	if isBackend {
-		return fmt.Sprintf("channel:{%s}:backend:%s", nodeID, channel)
+		return fmt.Sprintf("%s:backend:%s", channelKeyPrefix(nodeID), channel)
 	}
-	return fmt.Sprintf("channel:{%s}:%s", nodeID, channel)
+	return fmt.Sprintf("%s:%s", channelKeyPrefix(nodeID), channel)
+}
+
+func channelKeyExtractNodeID(key string) string {
+	a, b := strings.Index(key, "{"), strings.Index(key, "}")
+	if a < 0 || b < 0 {
+		return ""
+	}
+	return key[a+1 : b]
 }
 
 // Subscribe adds the given connection to the set of connections subscribed to
 // the channel. Backend connections get their own set.
 func Subscribe(c conn.Conn, channel string) error {
+	b, err := c.MarshalBinary()
+	if err != nil {
+		return err
+	}
 	k := channelKey(c.ID.NodeID(), channel, c.IsBackend)
-	return cmder.Cmd("ZADD", k, time.Now().UnixNano(), c.ID).Err
+	return cmder.Cmd("ZADD", k, time.Now().UnixNano(), b).Err
 }
 
 // Unsubscribe removes the given connection from the set of connections
 // subscribed to the channel
 func Unsubscribe(c conn.Conn, channel string) error {
+	b, err := c.MarshalBinary()
+	if err != nil {
+		return err
+	}
 	k := channelKey(c.ID.NodeID(), channel, c.IsBackend)
-	return cmder.Cmd("ZREM", k, c.ID).Err
+	return cmder.Cmd("ZREM", k, b).Err
 }
 
 // GetSubscribed returns the set of connections on the given node which are
 // subscribed to the given channel. Does not include backend connections.
-func GetSubscribed(nodeID, channel string, backend bool, timeout time.Duration) ([]conn.ID, error) {
+func GetSubscribed(nodeID, channel string, backend bool, timeout time.Duration) ([]conn.Conn, error) {
 	k := channelKey(nodeID, channel, backend)
 	tlower := time.Now().Add(-timeout).UnixNano()
-	l, err := cmder.Cmd("ZRANGEBYSCORE", k, tlower, "+inf").List()
+	l, err := cmder.Cmd("ZRANGEBYSCORE", k, tlower, "+inf").ListBytes()
 	if err != nil {
 		return nil, err
 	}
 
-	cc := make([]conn.ID, len(l))
+	cc := make([]conn.Conn, len(l))
 	for i := range l {
-		cc[i] = conn.ID(l[i])
+		var c conn.Conn
+		if err := c.UnmarshalBinary(l[i]); err != nil {
+			return nil, err
+		}
+		cc[i] = c
 	}
 	return cc, nil
 }
@@ -169,4 +193,34 @@ func CleanChannels(backend bool, timeout time.Duration) {
 			"err":     err,
 		})
 	}
+}
+
+// GetNodeIDs returns the IDs of all the currently active nodes. This does a
+// full key scan, so it shouldn't be used in any tight loops.
+func GetNodeIDs() ([]string, error) {
+	// TODO would be nice to have a lua wrapper which simply sets into a sorted
+	// set every time a node does anything
+
+	it := util.NewScanner(cmder, util.ScanOpts{
+		Command: "SCAN",
+		Pattern: channelKeyPrefix("*") + "*",
+	})
+	m := map[string]struct{}{}
+	for it.HasNext() {
+		k := it.Next()
+		nID := channelKeyExtractNodeID(k)
+		if nID == "" {
+			continue
+		}
+		m[nID] = struct{}{}
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+
+	res := make([]string, 0, len(m))
+	for nID := range m {
+		res = append(res, nID)
+	}
+	return res, nil
 }

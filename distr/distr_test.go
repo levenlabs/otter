@@ -41,7 +41,7 @@ func TestSubUnsub(t *T) {
 	cb.IsBackend = true
 	ch := testutil.RandStr()
 
-	assertSubscribed := func(timeout time.Duration, clients, backend []conn.ID) {
+	assertSubscribed := func(timeout time.Duration, clients, backend []conn.Conn) {
 		l, err := GetSubscribed(conn.NodeID, ch, false, timeout)
 		assert.Nil(t, err)
 		assert.Equal(t, clients, l)
@@ -51,27 +51,27 @@ func TestSubUnsub(t *T) {
 		assert.Equal(t, backend, l)
 	}
 
-	assertSubscribed(1*time.Second, []conn.ID{}, []conn.ID{})
+	assertSubscribed(1*time.Second, []conn.Conn{}, []conn.Conn{})
 
 	require.Nil(t, Subscribe(c, ch))
-	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{})
+	assertSubscribed(1*time.Second, []conn.Conn{c}, []conn.Conn{})
 	require.Nil(t, Subscribe(cb, ch))
-	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.Conn{c}, []conn.Conn{cb})
 
 	// Make sure duplicate subscribing doesn't do anything
 	require.Nil(t, Subscribe(c, ch))
-	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.Conn{c}, []conn.Conn{cb})
 	require.Nil(t, Subscribe(cb, ch))
-	assertSubscribed(1*time.Second, []conn.ID{c.ID}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.Conn{c}, []conn.Conn{cb})
 
 	// Make sure timeout on GetSubscribed does the right thing
 	time.Sleep(100 * time.Millisecond)
-	assertSubscribed(100*time.Millisecond, []conn.ID{}, []conn.ID{})
+	assertSubscribed(100*time.Millisecond, []conn.Conn{}, []conn.Conn{})
 
 	require.Nil(t, Unsubscribe(c, ch))
-	assertSubscribed(1*time.Second, []conn.ID{}, []conn.ID{cb.ID})
+	assertSubscribed(1*time.Second, []conn.Conn{}, []conn.Conn{cb})
 	require.Nil(t, Unsubscribe(cb, ch))
-	assertSubscribed(1*time.Second, []conn.ID{}, []conn.ID{})
+	assertSubscribed(1*time.Second, []conn.Conn{}, []conn.Conn{})
 
 	// Make sure cleanup works correctly
 	require.Nil(t, Subscribe(c, ch))
