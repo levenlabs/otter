@@ -92,7 +92,7 @@ func requireNoRcv(t *T, c *websocket.Conn) {
 }
 
 func TestNewConn(t *T) {
-	c, presence := testConn(false)
+	c, _ := testConn(false)
 	time.Sleep(100 * time.Millisecond)
 
 	assert.Len(t, r, 1)
@@ -103,19 +103,11 @@ func TestNewConn(t *T) {
 	}
 	require.NotEmpty(t, id)
 
-	cc, err := distr.GetConn(id)
-	require.Nil(t, err)
-	assert.Equal(t, presence, cc.Presence)
-
 	c.Close()
 	_, ok := <-rc.closeCh
 	assert.False(t, ok)
 	_, ok = getRConn(id)
 	assert.False(t, ok)
-
-	cc, err = distr.GetConn(cc.ID)
-	require.Nil(t, err)
-	assert.Equal(t, conn.Conn{}, cc)
 }
 
 func TestPubSubUnsub(t *T) {

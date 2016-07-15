@@ -218,11 +218,6 @@ func handler(c *websocket.Conn) {
 		ws.c.Close()
 	}()
 
-	if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
-		ws.writeError("error setting conn (init)", err, nil)
-		return
-	}
-
 	for _, ch := range ws.subs {
 		kv := llog.KV{"channel": ch}
 		if err := distr.Subscribe(ws.Conn, ch); err != nil {
@@ -259,10 +254,6 @@ func handler(c *websocket.Conn) {
 			})
 		}
 	}
-
-	if err := distr.UnsetConn(ws.Conn); err != nil {
-		ws.log(llog.Error, "error unsetting conn", llog.KV{"err": err})
-	}
 }
 
 func (ws *wsConn) spin() {
@@ -273,9 +264,6 @@ func (ws *wsConn) spin() {
 	for {
 		select {
 		case <-connSetTick.C:
-			if err := distr.SetConn(ws.Conn, connSetTimeout); err != nil {
-				ws.log(llog.Error, "error re-setting conn", llog.KV{"err": err})
-			}
 			for _, ch := range ws.subs {
 				if err := distr.Subscribe(ws.Conn, ch); err != nil {
 					ws.log(llog.Error, "error re-subscribing conn", llog.KV{

@@ -62,46 +62,6 @@ func Init(addr string, poolSize, subConnCount int) {
 	initSubs(addr, subConnCount)
 }
 
-func connKey(cID conn.ID) string {
-	return fmt.Sprintf("conn:%s", cID)
-}
-
-// SetConn sets the given connection's Conn struct into redis for the given
-// amount of time
-func SetConn(c conn.Conn, timeout time.Duration) error {
-	b, err := c.MarshalBinary()
-	if err != nil {
-		return err
-	}
-	milli := uint64(timeout / time.Millisecond)
-	return cmder.Cmd("PSETEX", connKey(c.ID), milli, b).Err
-}
-
-// UnsetConn unsets the given connection's Conn struct immediately
-func UnsetConn(c conn.Conn) error {
-	return cmder.Cmd("DEL", connKey(c.ID)).Err
-}
-
-// GetConn returns the connection info for the connection with the given ID.
-// Returns empty conn.Conn if the connection wasn't found
-func GetConn(cID conn.ID) (conn.Conn, error) {
-	var c conn.Conn
-	r := cmder.Cmd("GET", connKey(cID))
-	if r.Err != nil {
-		return c, r.Err
-	} else if r.IsType(redis.Nil) {
-		return c, nil
-	}
-
-	b, err := r.Bytes()
-	if err != nil {
-		return c, nil
-	}
-
-	err = c.UnmarshalBinary(b)
-	return c, err
-}
-
 func channelKeyPrefix(nodeID string) string {
 	return fmt.Sprintf("channel:{%s}", nodeID)
 }
